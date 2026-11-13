@@ -32,6 +32,15 @@ public static class Http
         return Results.Ok(new { items = rows.Select(map).ToList(), page = resolvedPage, pageSize = resolvedSize, total });
     }
 
+    public static async Task<IResult> PageWith<T>(IQueryable<T> query, int? page, int? pageSize, Func<List<T>, Task<List<object>>> project, CancellationToken cancellationToken)
+    {
+        var rule = PageRules.Resolve(page, pageSize, out var resolvedPage, out var resolvedSize);
+        RuleException.Require(rule);
+        var total = await query.CountAsync(cancellationToken);
+        var rows = await query.Skip((resolvedPage - 1) * resolvedSize).Take(resolvedSize).ToListAsync(cancellationToken);
+        return Results.Ok(new { items = await project(rows), page = resolvedPage, pageSize = resolvedSize, total });
+    }
+
     public static IResult Created(string path, object body) => Results.Created(path, body);
 
     public static string Digits(string phone) => AccountRules.Digits(phone);

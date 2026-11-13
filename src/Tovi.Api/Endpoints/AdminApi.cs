@@ -82,7 +82,12 @@ public static class AdminApi
         admin.MapGet("/students", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
         {
             Http.Me(http, UserType.Admin).Require(AccessMap.Students);
-            return await Http.Page(db.Users.Where(u => u.Type == UserType.Student).OrderByDescending(u => u.CreatedAt), page, pageSize, u => new { u.Id, u.FirstName, u.LastName, u.Phone, u.Gender, u.StudentKind, u.GradeId, u.SectionId, u.Status }, ct);
+            var progress = http.RequestServices.GetRequiredService<ProgressWork>();
+            return await Http.PageWith(db.Users.Where(u => u.Type == UserType.Student).OrderByDescending(u => u.CreatedAt), page, pageSize, async rows =>
+            {
+                var totals = await progress.TotalsAsync(rows.Select(r => r.Id).ToList(), ct);
+                return rows.Select(u => (object)new { u.Id, u.FirstName, u.LastName, u.Phone, u.Gender, u.StudentKind, u.GradeId, u.SectionId, u.Status, xp = totals.GetValueOrDefault(u.Id).Xp, streak = totals.GetValueOrDefault(u.Id).Streak }).ToList();
+            }, ct);
         });
 
         admin.MapGet("/employees", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>

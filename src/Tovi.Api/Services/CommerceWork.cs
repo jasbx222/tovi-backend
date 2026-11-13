@@ -199,7 +199,7 @@ public sealed class HourWork(ToviDb db, IClock clock)
         return room;
     }
 
-    public async Task<ClassSession> ScheduleTeacherAsync(Guid teacherId, Guid classroomId, DateTime startsAt, int? duration, CancellationToken cancellationToken)
+    public async Task<ClassSession> ScheduleTeacherAsync(Guid teacherId, Guid classroomId, DateTime startsAt, int? duration, CancellationToken cancellationToken, string? title = null)
     {
         await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var room = await db.Classrooms.FirstOrDefaultAsync(c => c.Id == classroomId && c.TeacherId == teacherId, cancellationToken)
@@ -211,15 +211,17 @@ public sealed class HourWork(ToviDb db, IClock clock)
         var overlaps = await OverlapsAsync(teacherId, startsAt, minutes, cancellationToken);
         var funded = hour is not null && hour.EndsAt > clock.UtcNow;
         RuleException.Require(HourRules.CanSchedule(duration, hour?.RemainingMinutes ?? 0, overlaps, funded));
+        RuleException.Require(SessionTitle(title));
         hour!.RemainingMinutes -= minutes;
         var session = NewSession(room.Id, teacherId, null, SessionFunding.TeacherPackage, startsAt, minutes);
+        session.Title = string.IsNullOrWhiteSpace(title) ? null : title.Trim();
         db.SessionsSchedule.Add(session);
         await db.SaveChangesAsync(cancellationToken);
         await tx.CommitAsync(cancellationToken);
         return session;
     }
 
-    public async Task<ClassSession> ScheduleInstituteAsync(Guid instituteId, Guid classroomId, DateTime startsAt, int? duration, CancellationToken cancellationToken)
+    public async Task<ClassSession> ScheduleInstituteAsync(Guid instituteId, Guid classroomId, DateTime startsAt, int? duration, CancellationToken cancellationToken, string? title = null)
     {
         if (classroomId == Guid.Empty)
             throw new RuleException("classroom_required", "The classroom id is required.");
@@ -234,8 +236,10 @@ public sealed class HourWork(ToviDb db, IClock clock)
         var minutes = duration ?? HourRules.DefaultDuration;
         var overlaps = await OverlapsAsync(room.TeacherId, startsAt, minutes, cancellationToken);
         RuleException.Require(HourRules.CanSchedule(duration, pool.RemainingMinutes, overlaps, true));
+        RuleException.Require(SessionTitle(title));
         pool.RemainingMinutes -= minutes;
         var session = NewSession(room.Id, room.TeacherId, instituteId, SessionFunding.InstitutePool, startsAt, minutes);
+        session.Title = string.IsNullOrWhiteSpace(title) ? null : title.Trim();
         db.SessionsSchedule.Add(session);
         await db.SaveChangesAsync(cancellationToken);
         await tx.CommitAsync(cancellationToken);
@@ -296,6 +300,14 @@ public sealed class HourWork(ToviDb db, IClock clock)
             .Where(s => s.TeacherId == teacherId && s.Status == SessionStatus.Scheduled)
             .ToListAsync(cancellationToken);
         return rows.Any(s => HourRules.Overlaps(startsAt, minutes, s.StartsAt, s.DurationMinutes));
+    }
+
+    static RuleResult SessionTitle(string? title)
+    {
+        var value = (title ?? "").Trim();
+        if (value.Length > 120) return RuleResult.Deny("title_length", "A session title is at most 120 characters.");
+        if (TextGuard.HasMarkup(value)) return RuleResult.Deny("markup_rejected", "Plain text only.");
+        return RuleResult.Allow();
     }
 
     ClassSession NewSession(Guid classroomId, Guid teacherId, Guid? instituteId, SessionFunding funding, DateTime startsAt, int minutes) =>

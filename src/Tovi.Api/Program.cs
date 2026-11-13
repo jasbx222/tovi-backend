@@ -30,6 +30,7 @@ builder.Services.AddScoped<LearningWork>();
 builder.Services.AddScoped<CommerceWork>();
 builder.Services.AddScoped<HourWork>();
 builder.Services.AddScoped<NotifyWork>();
+builder.Services.AddScoped<ProgressWork>();
 builder.Services.AddSingleton<ToviJobs>();
 builder.Services.AddSingleton<IOtpSender, LoggingOtpSender>();
 builder.Services.AddSingleton<IPaymentGateway, ConfiguredPaymentGateway>();
@@ -172,6 +173,7 @@ await using (var scope = app.Services.CreateAsyncScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ToviDb>();
     await db.Database.EnsureCreatedAsync();
+    await SchemaUpgrade.ApplyAsync(db);
     if (app.Environment.IsDevelopment() && !await db.Users.AnyAsync())
     {
         var admin = new User
