@@ -87,7 +87,13 @@ public static class StudentApi
             var actor = Http.Me(http, UserType.Student);
             return Results.Ok(new { actor.User.Id, actor.User.FirstName, actor.User.LastName, actor.User.Phone, actor.User.Gender, actor.User.GradeId });
         });
+        student.MapGet("/progress", async (HttpContext http, ProgressWork progress, CancellationToken ct) =>
+        {
+            var actor = Http.Me(http, UserType.Student);
+            return Results.Ok(await progress.SummaryAsync(actor.User.Id, ct));
+        });
         MeetingApi.Map(student);
+        LiveApi.Map(student);
     }
 
     static async Task<IResult> Home(HttpContext http, ToviDb db, CancellationToken ct)
@@ -97,7 +103,13 @@ public static class StudentApi
         var courseIds = enrolled.Where(e => e.TargetType == AccessTarget.Course).Select(e => e.TargetId).ToList();
         var courses = await db.Courses.Where(c => courseIds.Contains(c.Id)).Select(c => new { c.Id, c.Title }).ToListAsync(ct);
         var roomIds = enrolled.Where(e => e.TargetType == AccessTarget.VirtualClassroom).Select(e => e.TargetId).ToList();
-        var sessions = await db.SessionsSchedule.Where(s => roomIds.Contains(s.ClassroomId) && s.Status == SessionStatus.Scheduled).OrderBy(s => s.StartsAt).ToListAsync(ct);
+        var sessions = await (
+            from s in db.SessionsSchedule
+            where roomIds.Contains(s.ClassroomId) && s.Status == SessionStatus.Scheduled
+            join c in db.Classrooms on s.ClassroomId equals c.Id
+            join t in db.Users on s.TeacherId equals t.Id
+            orderby s.StartsAt
+            select new { s.Id, s.ClassroomId, s.TeacherId, s.InstituteId, s.StartsAt, s.DurationMinutes, s.Status, s.Title, classroomTitle = c.Title, teacherName = t.FirstName + " " + t.LastName }).ToListAsync(ct);
         var ads = await db.Advertisements.Where(a => a.Active).OrderByDescending(a => a.CreatedAt).Take(5).ToListAsync(ct);
         return Results.Ok(new { courses, sessions, ads });
     }
@@ -186,11 +198,13 @@ public static class StudentApi
         });
     }
 
-    static async Task<IResult> Submit(Guid id, AttemptBody body, HttpContext http, LearningWork learning, CancellationToken ct)
+    static async Task<IResult> Submit(Guid id, AttemptBody body, HttpContext http, LearningWork learning, ProgressWork progress, ToviDb db, CancellationToken ct)
     {
         var actor = Http.Me(http, UserType.Student);
         var attempt = await learning.SubmitAsync(actor.User.Id, id, body.Answers.Select(a => (a.QuestionId, a.Response)).ToList(), ct);
-        return Results.Ok(new { attempt.Id, attempt.TotalMark });
+        var xp = await progress.AwardAsync(actor.User.Id, ProgressRules.Exam, id, ct);
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { attempt.Id, attempt.TotalMark, xp });
     }
 
     static async Task<IResult> Result(Guid id, HttpContext http, ToviDb db, CancellationToken ct)
@@ -202,7 +216,7 @@ public static class StudentApi
         return Results.Ok(new { attempt.TotalMark, attempt.SubmittedAt, answers });
     }
 
-    static async Task<IResult> Progress(Guid id, HttpContext http, ToviDb db, IClock clock, CancellationToken ct)
+    static async Task<IResult> Progress(Guid id, HttpContext http, ToviDb db, IClock clock, ProgressWork progress, CancellationToken ct)
     {
         var actor = Http.Me(http, UserType.Student);
         var lesson = await db.Lessons.FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw new RuleException("not_found", "Lesson was not found.", 404);
@@ -211,8 +225,9 @@ public static class StudentApi
         if (!enrolled) throw new RuleException("not_enrolled", "Redeem a course code before opening lessons.", 403);
         if (!await db.LessonProgress.AnyAsync(p => p.StudentId == actor.User.Id && p.LessonId == id, ct))
             db.LessonProgress.Add(new LessonProgress { Id = Guid.NewGuid(), StudentId = actor.User.Id, LessonId = id, CompletedAt = clock.UtcNow });
+        var xp = await progress.AwardAsync(actor.User.Id, ProgressRules.Lesson, id, ct);
         await db.SaveChangesAsync(ct);
-        return Results.Ok(new { completed = true });
+        return Results.Ok(new { completed = true, xp });
     }
 
     static async Task<IResult> Device(DeviceBody body, HttpContext http, ToviDb db, IClock clock, CancellationToken ct)
@@ -271,7 +286,7 @@ public static class MeetingApi
         }
         else identity = $"user:{actor.User.Id}";
 
-        RuleException.Require(MeetingRules.CanJoin(session.StartsAt, session.DurationMinutes, clock.UtcNow, allowed));
+        RuleException.Require(MeetingRules.CanJoin(session.StartsAt, session.DurationMinutes, clock.UtcNow, allowed, admin));
         var environment = configuration["Firebase:Environment"];
         var host = configuration["LiveKit:Host"];
         var key = configuration["LiveKit:ApiKey"];
@@ -280,8 +295,10 @@ public static class MeetingApi
             throw new RuleException("livekit_unconfigured", "LiveKit is not configured on the server.", 503);
         var minutes = int.TryParse(configuration["LiveKit:TokenMinutes"], out var parsed) ? parsed : 10;
         var room = MeetingRules.Room(environment, session.Id);
-        var token = LiveKitTokens.Create(key, secret, identity, room, admin, publish, clock.UtcNow.AddMinutes(minutes));
-        return Results.Ok(new { url = host, token, room, identity, admin, publish, startsAt = session.StartsAt, durationMinutes = session.DurationMinutes });
+        var name = $"{actor.User.FirstName} {actor.User.LastName}".Trim();
+        var token = LiveKitTokens.Create(key, secret, identity, room, admin, publish, clock.UtcNow.AddMinutes(minutes), name);
+        await LiveApi.TouchAsync(db, clock, session, actor.User.Id, identity, name, admin, ct);
+        return Results.Ok(new { url = host, token, room, identity, name, admin, publish, title = session.Title, startsAt = session.StartsAt, durationMinutes = session.DurationMinutes });
     }
 
     static async Task<IResult> Chat(Guid id, HttpContext http, ToviDb db, IConfiguration configuration, CancellationToken ct)
@@ -325,13 +342,8 @@ public static class MeetingApi
         return Results.Ok(new { removed = body.Identity });
     }
 
-    static IResult Recording(Guid id, HttpContext http, IConfiguration configuration)
-    {
-        RequireHost(http);
-        if (!configuration.GetValue<bool>("LiveKit:EgressEnabled"))
-            throw new RuleException("recording_disabled", "Recording is disabled until egress is configured.", 409);
-        return Results.Json(new { error = "recording_unconfigured" }, statusCode: 503);
-    }
+    static Task<IResult> Recording(Guid id, HttpContext http, ToviDb db, IClock clock, IConfiguration configuration, CancellationToken ct) =>
+        LiveApi.StartRecordingAsync(id, http, db, clock, configuration, ct);
 
     static string RoomOrThrow(IConfiguration configuration, Guid sessionId)
     {

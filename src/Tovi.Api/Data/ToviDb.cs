@@ -59,6 +59,13 @@ public sealed class ToviDb : DbContext
     public DbSet<SavedCourse> SavedCourses => Set<SavedCourse>();
     public DbSet<OtpChallenge> Otps => Set<OtpChallenge>();
     public DbSet<Recording> Recordings => Set<Recording>();
+    public DbSet<SessionPresence> Presences => Set<SessionPresence>();
+    public DbSet<LiveReaction> Reactions => Set<LiveReaction>();
+    public DbSet<LiveQuestion> LiveQuestions => Set<LiveQuestion>();
+    public DbSet<LiveQuestionVote> LiveQuestionVotes => Set<LiveQuestionVote>();
+    public DbSet<LivePoll> Polls => Set<LivePoll>();
+    public DbSet<LivePollVote> PollVotes => Set<LivePollVote>();
+    public DbSet<XpEvent> XpEvents => Set<XpEvent>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -79,6 +86,24 @@ public sealed class ToviDb : DbContext
         modelBuilder.Entity<SavedCourse>().HasIndex(x => new { x.StudentId, x.CourseId }).IsUnique();
         modelBuilder.Entity<GroupMember>().HasIndex(x => new { x.GroupId, x.StudentId }).IsUnique();
         modelBuilder.Entity<ExamGroup>().HasIndex(x => new { x.ExamId, x.GroupId }).IsUnique();
+        modelBuilder.Entity<ClassSession>().Property(x => x.Title).HasMaxLength(120);
+        modelBuilder.Entity<SessionPresence>().HasIndex(x => new { x.SessionId, x.UserId }).IsUnique();
+        modelBuilder.Entity<SessionPresence>().Property(x => x.Identity).HasMaxLength(80);
+        modelBuilder.Entity<SessionPresence>().Property(x => x.Name).HasMaxLength(120);
+        modelBuilder.Entity<LiveReaction>().HasIndex(x => new { x.SessionId, x.UserId, x.CreatedAt });
+        modelBuilder.Entity<LiveReaction>().Property(x => x.Kind).HasMaxLength(20);
+        modelBuilder.Entity<LiveQuestion>().HasIndex(x => x.SessionId);
+        modelBuilder.Entity<LiveQuestion>().Property(x => x.Text).HasMaxLength(300);
+        modelBuilder.Entity<LiveQuestion>().Property(x => x.AuthorName).HasMaxLength(120);
+        modelBuilder.Entity<LiveQuestionVote>().HasIndex(x => new { x.QuestionId, x.UserId }).IsUnique();
+        modelBuilder.Entity<LivePoll>().HasIndex(x => x.SessionId);
+        modelBuilder.Entity<LivePoll>().Property(x => x.Question).HasMaxLength(200);
+        modelBuilder.Entity<LivePoll>().Property(x => x.Options).HasMaxLength(500);
+        modelBuilder.Entity<LivePollVote>().HasIndex(x => new { x.PollId, x.UserId }).IsUnique();
+        modelBuilder.Entity<XpEvent>().HasIndex(x => new { x.StudentId, x.Kind, x.SourceId }).IsUnique();
+        modelBuilder.Entity<XpEvent>().Property(x => x.Kind).HasMaxLength(20);
+        modelBuilder.Entity<XpEvent>().Property(x => x.Day).HasMaxLength(10);
+        modelBuilder.Entity<Recording>().Property(x => x.EgressId).HasMaxLength(80);
 
         foreach (var entity in modelBuilder.Model.GetEntityTypes())
         {

@@ -364,6 +364,7 @@ public class ClassSession
     public DateTime StartsAt { get; set; }
     public int DurationMinutes { get; set; }
     public SessionStatus Status { get; set; } = SessionStatus.Scheduled;
+    public string? Title { get; set; }
     public bool ReminderSent { get; set; }
     public DateTime CreatedAt { get; set; }
 }
@@ -495,5 +496,81 @@ public class Recording
     public Guid SessionId { get; set; }
     public string Status { get; set; } = "";
     public string? PlaybackPath { get; set; }
+    public string? EgressId { get; set; }
+    public DateTime? EndedAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class SessionPresence
+{
+    public Guid Id { get; set; }
+    public Guid SessionId { get; set; }
+    public Guid UserId { get; set; }
+    public string Identity { get; set; } = "";
+    public string Name { get; set; } = "";
+    public bool Host { get; set; }
+    public DateTime FirstSeenAt { get; set; }
+    public DateTime LastSeenAt { get; set; }
+    public DateTime? JoinedLiveAt { get; set; }
+    public int LiveSeconds { get; set; }
+    public bool Attended { get; set; }
+}
+
+public class LiveReaction
+{
+    public Guid Id { get; set; }
+    public Guid SessionId { get; set; }
+    public Guid UserId { get; set; }
+    public string Kind { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+}
+
+public class LiveQuestion
+{
+    public Guid Id { get; set; }
+    public Guid SessionId { get; set; }
+    public Guid AuthorId { get; set; }
+    public string AuthorName { get; set; } = "";
+    public string Text { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime? AnsweredAt { get; set; }
+    public bool Hidden { get; set; }
+}
+
+public class LiveQuestionVote
+{
+    public Guid Id { get; set; }
+    public Guid QuestionId { get; set; }
+    public Guid UserId { get; set; }
+}
+
+public class LivePoll
+{
+    public Guid Id { get; set; }
+    public Guid SessionId { get; set; }
+    public Guid CreatedById { get; set; }
+    public string Question { get; set; } = "";
+    public string Options { get; set; } = "";
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ClosedAt { get; set; }
+}
+
+public class LivePollVote
+{
+    public Guid Id { get; set; }
+    public Guid PollId { get; set; }
+    public Guid UserId { get; set; }
+    public int Option { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public class XpEvent
+{
+    public Guid Id { get; set; }
+    public Guid StudentId { get; set; }
+    public string Kind { get; set; } = "";
+    public Guid SourceId { get; set; }
+    public int Points { get; set; }
+    public string Day { get; set; } = "";
     public DateTime CreatedAt { get; set; }
 }

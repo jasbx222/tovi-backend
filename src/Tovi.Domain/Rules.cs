@@ -319,17 +319,133 @@ public static class ExamRules
 
 public static class MeetingRules
 {
-    public static RuleResult CanJoin(DateTime startsAt, int durationMinutes, DateTime now, bool allowedParticipant)
+    public const int LobbyMinutes = 10;
+
+    public static RuleResult CanJoin(DateTime startsAt, int durationMinutes, DateTime now, bool allowedParticipant, bool host = false)
     {
         if (!allowedParticipant)
             return RuleResult.Deny("not_enrolled", "Only authorized participants can enter this meeting.", 403);
         var end = startsAt.AddMinutes(durationMinutes);
-        if (now < startsAt || now >= end)
+        var opens = host ? startsAt.AddMinutes(-LobbyMinutes) : startsAt;
+        if (now < opens || now >= end)
             return RuleResult.Deny("outside_window", "The session is outside its allowed time window.", 403);
         return RuleResult.Allow();
+    }
+
+    public static string Phase(DateTime startsAt, int durationMinutes, DateTime now)
+    {
+        if (now >= startsAt.AddMinutes(durationMinutes)) return "ended";
+        if (now >= startsAt) return "live";
+        if (now >= startsAt.AddMinutes(-LobbyMinutes)) return "lobby";
+        return "upcoming";
     }
 
     public static string Room(string environment, Guid sessionId) => $"{environment}:session:{sessionId}";
 
     public static string ChatPath(string environment, Guid sessionId) => $"{environment}/meetings/{sessionId}/messages";
+}
+
+public static class LiveRules
+{
+    public static readonly string[] Reactions = ["clap", "heart", "idea", "laugh", "wow"];
+    public const int MaxHeartbeatSeconds = 45;
+    public const int ReactionGapMilliseconds = 800;
+
+    public static RuleResult Reaction(string? kind) =>
+        Reactions.Contains(kind ?? "")
+            ? RuleResult.Allow()
+            : RuleResult.Deny("reaction_unknown", "Choose one of the offered reactions.");
+
+    public static RuleResult QuestionText(string? text)
+    {
+        var value = (text ?? "").Trim();
+        if (value.Length == 0 || value.Length > 300)
+            return RuleResult.Deny("question_length", "A question is 1 to 300 characters.");
+        if (TextGuard.HasMarkup(value))
+            return RuleResult.Deny("markup_rejected", "Plain text only.");
+        return RuleResult.Allow();
+    }
+
+    public static RuleResult Poll(string? question, IReadOnlyList<string>? options)
+    {
+        var title = (question ?? "").Trim();
+        if (title.Length == 0 || title.Length > 200)
+            return RuleResult.Deny("poll_question_length", "A poll question is 1 to 200 characters.");
+        var list = (options ?? []).Select(o => (o ?? "").Trim()).ToList();
+        if (list.Count < 2 || list.Count > 5)
+            return RuleResult.Deny("poll_options_count", "A poll has 2 to 5 options.");
+        if (list.Any(o => o.Length == 0 || o.Length > 80 || o.Contains('\n')))
+            return RuleResult.Deny("poll_option_length", "Each option is 1 to 80 characters on one line.");
+        if (list.Distinct(StringComparer.OrdinalIgnoreCase).Count() != list.Count)
+            return RuleResult.Deny("poll_option_duplicate", "Options must differ.");
+        if (TextGuard.HasMarkup(title) || list.Any(TextGuard.HasMarkup))
+            return RuleResult.Deny("markup_rejected", "Plain text only.");
+        return RuleResult.Allow();
+    }
+
+    public static int Credit(DateTime lastSeenAt, DateTime now)
+    {
+        var gap = (int)Math.Floor((now - lastSeenAt).TotalSeconds);
+        return Math.Clamp(gap, 0, MaxHeartbeatSeconds);
+    }
+
+    public static int AttendanceSeconds(int durationMinutes) => Math.Max(60, durationMinutes * 60 / 2);
+
+    public static bool Attended(int liveSeconds, int durationMinutes) => liveSeconds >= AttendanceSeconds(durationMinutes);
+}
+
+public static class ProgressRules
+{
+    public const string Lesson = "lesson";
+    public const string Exam = "exam";
+    public const string Live = "live";
+
+    public static int Points(string kind) => kind switch
+    {
+        Lesson => 10,
+        Exam => 20,
+        Live => 30,
+        _ => 0
+    };
+
+    public static string Day(DateTime utc)
+    {
+        var local = utc.AddHours(3);
+        return local.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    public static (int Current, int Best, bool Today) Streak(IEnumerable<string> days, string today)
+    {
+        var set = days.Select(d => DateOnly.ParseExact(d, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)).ToHashSet();
+        var now = DateOnly.ParseExact(today, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        var best = 0;
+        foreach (var day in set)
+        {
+            if (set.Contains(day.AddDays(-1))) continue;
+            var run = 0;
+            while (set.Contains(day.AddDays(run))) run++;
+            best = Math.Max(best, run);
+        }
+        var active = set.Contains(now);
+        var cursor = active ? now : now.AddDays(-1);
+        var current = 0;
+        while (set.Contains(cursor.AddDays(-current))) current++;
+        return (current, best, active);
+    }
+
+    public sealed record Badge(string Key, string Kind, int Goal);
+
+    public static readonly Badge[] Badges =
+    [
+        new("first_lesson", Lesson, 1),
+        new("ten_lessons", Lesson, 10),
+        new("first_exam", Exam, 1),
+        new("five_exams", Exam, 5),
+        new("first_live", Live, 1),
+        new("five_lives", Live, 5),
+        new("streak_3", "streak", 3),
+        new("streak_7", "streak", 7),
+        new("xp_100", "xp", 100),
+        new("xp_500", "xp", 500),
+    ];
 }

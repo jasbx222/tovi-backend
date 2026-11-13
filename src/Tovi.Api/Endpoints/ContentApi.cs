@@ -19,7 +19,7 @@ public record MemberBody(Guid StudentId);
 public record CodeCountBody(int Count);
 public record AnswerMarkBody(int Mark);
 public record ClassroomBody(string Title);
-public record SessionBody(Guid ClassroomId, DateTime StartsAt, int? DurationMinutes);
+public record SessionBody(Guid ClassroomId, DateTime StartsAt, int? DurationMinutes, string? Title = null);
 public record RedeemBody(string Code);
 public record StudentBody(string FirstName, string LastName, string Phone, string Password, StudentKind Kind, Guid? GradeId, Guid? SectionId, Guid? SchoolId);
 public record SchoolBody(string Name);
@@ -41,7 +41,9 @@ public static class ContentApi
             RuleException.Require(rule);
             var query = db.Users.Where(u => ids.Contains(u.Id));
             var total = await query.CountAsync(ct);
-            var items = await query.OrderBy(u => u.FirstName).Skip((p - 1) * s).Take(s).Select(u => new { u.Id, u.FirstName, u.LastName, u.Phone }).ToListAsync(ct);
+            var rows = await query.OrderBy(u => u.FirstName).Skip((p - 1) * s).Take(s).Select(u => new { u.Id, u.FirstName, u.LastName, u.Phone }).ToListAsync(ct);
+            var totals = await http.RequestServices.GetRequiredService<ProgressWork>().TotalsAsync(rows.Select(r => r.Id).ToList(), ct);
+            var items = rows.Select(u => new { u.Id, u.FirstName, u.LastName, u.Phone, xp = totals.GetValueOrDefault(u.Id).Xp, streak = totals.GetValueOrDefault(u.Id).Streak });
             return Results.Ok(new { items, page = p, pageSize = s, total });
         });
         group.MapPost("/assistants", CreateStaff);
@@ -84,7 +86,12 @@ public static class ContentApi
         {
             var actor = Http.Me(http, UserType.InstituteManager);
             actor.Require(AccessMap.Students);
-            return await Http.Page(db.Users.Where(u => u.Type == UserType.Student && u.SchoolId != null && db.Schools.Any(s => s.Id == u.SchoolId && s.InstituteId == actor.Owner.Id)).OrderBy(u => u.FirstName), page, pageSize, u => new { u.Id, u.FirstName, u.LastName, u.Phone, u.StudentKind, u.SchoolId }, ct);
+            var progress = http.RequestServices.GetRequiredService<ProgressWork>();
+            return await Http.PageWith(db.Users.Where(u => u.Type == UserType.Student && u.SchoolId != null && db.Schools.Any(s => s.Id == u.SchoolId && s.InstituteId == actor.Owner.Id)).OrderBy(u => u.FirstName), page, pageSize, async rows =>
+            {
+                var totals = await progress.TotalsAsync(rows.Select(r => r.Id).ToList(), ct);
+                return rows.Select(u => (object)new { u.Id, u.FirstName, u.LastName, u.Phone, u.StudentKind, u.SchoolId, xp = totals.GetValueOrDefault(u.Id).Xp, streak = totals.GetValueOrDefault(u.Id).Streak }).ToList();
+            }, ct);
         });
         group.MapPost("/students", CreateStudent);
         group.MapGet("/employees", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
@@ -265,6 +272,7 @@ public static class ContentApi
         });
         group.MapGet("/reports/codes", ReportCodes);
         MeetingApi.Map(group);
+        LiveApi.Map(group);
     }
 
     static async Task<IResult> Home(HttpContext http, ToviDb db, CodeWork codes, IClock clock, CancellationToken ct)
@@ -523,15 +531,15 @@ public static class ContentApi
         var actor = Portal(http);
         actor.Require(PermissionCatalog.Create("sessions"));
         if (actor.Portal == UserType.InstituteManager)
-            return Results.Ok(await hours.ScheduleInstituteAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct));
-        return Results.Ok(await hours.ScheduleTeacherAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct));
+            return Results.Ok(await hours.ScheduleInstituteAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct, body.Title));
+        return Results.Ok(await hours.ScheduleTeacherAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct, body.Title));
     }
 
     static async Task<IResult> ScheduleInstitute(SessionBody body, HttpContext http, HourWork hours, CancellationToken ct)
     {
         var actor = Http.Me(http, UserType.InstituteManager);
         actor.Require(PermissionCatalog.Create("sessions"));
-        return Results.Ok(await hours.ScheduleInstituteAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct));
+        return Results.Ok(await hours.ScheduleInstituteAsync(actor.Owner.Id, body.ClassroomId, body.StartsAt, body.DurationMinutes, ct, body.Title));
     }
 
     static async Task<IResult> CancelSession(Guid id, HttpContext http, HourWork hours, CancellationToken ct)

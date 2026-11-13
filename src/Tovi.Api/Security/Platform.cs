@@ -238,30 +238,37 @@ public static class JwtTokens
 
 public static class LiveKitTokens
 {
-    public static string Create(string apiKey, string apiSecret, string identity, string room, bool roomAdmin, bool canPublish, DateTime expires)
+    /// <summary>
+    /// Signs a LiveKit access token (HS256). Signed by hand because LiveKit accepts any secret length,
+    /// while the identity model token handler refuses keys shorter than 256 bits.
+    /// </summary>
+    public static string Create(string apiKey, string apiSecret, string identity, string room, bool roomAdmin, bool canPublish, DateTime expires, string? name = null, bool roomRecord = false)
     {
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(apiSecret));
-        var token = new JwtSecurityToken(
-            issuer: apiKey,
-            claims:
-            [
-                new Claim(JwtRegisteredClaimNames.Sub, identity),
-                new Claim(JwtRegisteredClaimNames.Iss, apiKey),
-                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
-            ],
-            notBefore: DateTime.UtcNow,
-            expires: expires,
-            signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
-        token.Payload["video"] = new Dictionary<string, object>
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var payload = new Dictionary<string, object>
         {
-            ["room"] = room,
-            ["roomJoin"] = true,
-            ["canPublish"] = canPublish,
-            ["canSubscribe"] = true,
-            ["canPublishData"] = true,
-            ["roomAdmin"] = roomAdmin
+            ["sub"] = identity,
+            ["iss"] = apiKey,
+            ["jti"] = Guid.NewGuid().ToString("N"),
+            ["nbf"] = now,
+            ["exp"] = new DateTimeOffset(DateTime.SpecifyKind(expires, DateTimeKind.Utc)).ToUnixTimeSeconds(),
+            ["video"] = new Dictionary<string, object>
+            {
+                ["room"] = room,
+                ["roomJoin"] = true,
+                ["canPublish"] = canPublish,
+                ["canSubscribe"] = true,
+                ["canPublishData"] = true,
+                ["roomAdmin"] = roomAdmin,
+                ["roomRecord"] = roomRecord
+            }
         };
-        return new JwtSecurityTokenHandler().WriteToken(token);
+        if (!string.IsNullOrWhiteSpace(name)) payload["name"] = name;
+        static string Part(byte[] bytes) => Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        var head = Part(Encoding.UTF8.GetBytes("{\"alg\":\"HS256\",\"typ\":\"JWT\"}"));
+        var body = Part(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload));
+        var signature = Part(HMACSHA256.HashData(Encoding.UTF8.GetBytes(apiSecret), Encoding.UTF8.GetBytes($"{head}.{body}")));
+        return $"{head}.{body}.{signature}";
     }
 }
 
