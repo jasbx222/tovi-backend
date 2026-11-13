@@ -45,7 +45,9 @@ public static class SchemaUpgrade
                         Name = column.Name,
                         ClrType = column.ClrType,
                         ColumnType = column.ColumnType,
-                        IsNullable = true,
+                        // Rows that already exist need a value: value-type columns get their type default.
+                        IsNullable = column.IsNullable || !column.ClrType.IsValueType,
+                        DefaultValue = column.IsNullable || !column.ClrType.IsValueType ? null : column.DefaultValue ?? Activator.CreateInstance(column.ClrType),
                         MaxLength = column.MaxLength,
                         IsUnicode = column.IsUnicode,
                     });

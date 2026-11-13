@@ -373,7 +373,7 @@ public static class LiveApi
     static async Task<IResult> Summary(Guid id, HttpContext http, ToviDb db, IClock clock, CancellationToken ct)
     {
         var party = await PartyAsync(http, db, id, ct);
-        if (!party.Host && !party.Viewer) throw new RuleException("forbidden", "Only the session staff can read the summary.", 403);
+        if (!party.Host && !party.Viewer) return await StudentRecap(party, db, clock, ct);
         var session = party.Session;
         var enrolled = await db.Enrollments.CountAsync(e => e.TargetType == AccessTarget.VirtualClassroom && e.TargetId == session.ClassroomId, ct);
         var people = await db.Presences.Where(p => p.SessionId == id && !p.Host).OrderByDescending(p => p.LiveSeconds).ToListAsync(ct);
@@ -394,6 +394,49 @@ public static class LiveApi
             attendance = people.Select(p => new { p.Name, p.Identity, minutes = (int)Math.Round(p.LiveSeconds / 60.0), p.Attended, p.FirstSeenAt, p.JoinedLiveAt }),
             reactions,
             questions = new { total = questions.Count, answered = questions.Count(q => q.Answered), top = questions.Take(5) },
+            polls,
+            recordings
+        });
+    }
+
+    /// <summary>The recap a student sees after a session: their own attendance, questions, poll votes, XP and the replay.</summary>
+    static async Task<IResult> StudentRecap(Party party, ToviDb db, IClock clock, CancellationToken ct)
+    {
+        var session = party.Session;
+        var me = party.Actor.User.Id;
+        var mine = await db.Presences.FirstOrDefaultAsync(p => p.SessionId == session.Id && p.UserId == me, ct);
+        var questions = await QuestionRows(db, session.Id, me, false, ct);
+        var polls = await PollRows(db, session.Id, me, ct);
+        var reactions = await db.Reactions.Where(r => r.SessionId == session.Id).GroupBy(r => r.Kind).Select(g => new { kind = g.Key, count = g.Count() }).ToListAsync(ct);
+        var myReactions = await db.Reactions.CountAsync(r => r.SessionId == session.Id && r.UserId == me, ct);
+        var recordings = await db.Recordings.Where(r => r.SessionId == session.Id && r.Status == "ready").OrderByDescending(r => r.CreatedAt)
+            .Select(r => new { r.Id, r.Status, url = r.PlaybackPath, r.CreatedAt, r.EndedAt }).ToListAsync(ct);
+        var xp = await db.XpEvents.Where(e => e.StudentId == me && e.Kind == ProgressRules.Live && e.SourceId == session.Id).SumAsync(e => (int?)e.Points, ct) ?? 0;
+        var classroom = await db.Classrooms.Where(c => c.Id == session.ClassroomId).Select(c => c.Title).FirstOrDefaultAsync(ct) ?? "";
+        var teacher = await db.Users.Where(u => u.Id == session.TeacherId).Select(u => new { u.FirstName, u.LastName, u.PhotoFileId }).FirstOrDefaultAsync(ct);
+        var joined = await db.Presences.CountAsync(p => p.SessionId == session.Id && !p.Host && p.JoinedLiveAt != null, ct);
+        return Results.Ok(new
+        {
+            student = true,
+            session = new { session.Id, session.Title, session.StartsAt, session.DurationMinutes, classroomTitle = classroom,
+                teacherName = teacher is null ? "" : $"{teacher.FirstName} {teacher.LastName}".Trim(),
+                teacherPhotoUrl = StudentHubApi.FileUrl(teacher?.PhotoFileId) },
+            phase = session.Status == SessionStatus.Canceled ? "cancelled" : MeetingRules.Phase(session.StartsAt, session.DurationMinutes, clock.UtcNow),
+            me = new
+            {
+                minutes = mine is null ? 0 : (int)Math.Round(mine.LiveSeconds / 60.0),
+                attended = mine?.Attended ?? false,
+                joined = mine?.JoinedLiveAt is not null,
+                attendanceMinutes = LiveRules.AttendanceSeconds(session.DurationMinutes) / 60,
+                xp,
+                reactions = myReactions,
+                asked = questions.Count(q => q.Mine),
+                answered = questions.Count(q => q.Mine && q.Answered),
+                pollsVoted = polls.Count(p => p.MyOption is not null)
+            },
+            classmates = joined,
+            reactions,
+            questions = questions.Where(q => q.Mine || q.Answered).Take(20),
             polls,
             recordings
         });

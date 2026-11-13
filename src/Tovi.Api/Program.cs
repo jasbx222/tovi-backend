@@ -166,6 +166,7 @@ AdminApi.Map(api);
 ContentApi.MapTeacher(api);
 ContentApi.MapInstitute(api);
 StudentApi.Map(api);
+StudentHubApi.Map(api);
 FilesApi.Map(app);
 app.MapGet("/api/health", () => Results.Ok(new { name = "TOVI", ok = true }));
 
