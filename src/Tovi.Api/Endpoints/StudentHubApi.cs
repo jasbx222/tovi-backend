@@ -155,13 +155,13 @@ public static class StudentHubApi
                 submittedAt = attempt?.SubmittedAt
             };
         }).ToList();
-        if (!string.IsNullOrWhiteSpace(state)) rows = rows.Where(r => r.state == state).ToList();
         var counts2 = new
         {
             open = rows.Count(r => r.state == "open"),
             done = rows.Count(r => r.state == "done" || r.state == "pending"),
             locked = rows.Count(r => r.state == "locked")
         };
+        if (!string.IsNullOrWhiteSpace(state)) rows = rows.Where(r => r.state == state || (state == "submitted" && r.state is "done" or "pending")).ToList();
         var slice = rows.Skip((p - 1) * size).Take(size).ToList();
         return Results.Ok(new { items = slice, page = p, pageSize = size, total = rows.Count, hasMore = p * size < rows.Count, counts = counts2 });
     }
