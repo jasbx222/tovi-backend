@@ -152,6 +152,11 @@ public static class ContentApi
     {
         group.MapGet("/courses", ListCourses);
         group.MapPost("/courses", CreateCourse);
+        group.MapPut("/courses/{id:guid}", UpdateCourse);
+        group.MapGet("/grades", (HttpContext http, ToviDb db, CancellationToken ct) => Catalog(http, db.Grades, ct));
+        group.MapGet("/sections", (HttpContext http, ToviDb db, CancellationToken ct) => Catalog(http, db.Sections, ct));
+        group.MapGet("/subjects", (HttpContext http, ToviDb db, CancellationToken ct) => Catalog(http, db.Subjects, ct));
+        group.MapGet("/learning-domains", (HttpContext http, ToviDb db, CancellationToken ct) => Catalog(http, db.LearningDomains, ct));
         group.MapGet("/courses/{id:guid}/chapters", async (Guid id, HttpContext http, ToviDb db, CancellationToken ct) =>
         {
             await OwnCourse(http, db, id, ct);
@@ -353,6 +358,34 @@ public static class ContentApi
         db.Courses.Add(course);
         await db.SaveChangesAsync(ct);
         return Results.Ok(course);
+    }
+
+    static async Task<IResult> UpdateCourse(Guid id, CourseBody body, HttpContext http, ToviDb db, CancellationToken ct)
+    {
+        var actor = Portal(http);
+        actor.Require(PermissionCatalog.Update("courses"));
+        await OwnCourse(http, db, id, ct);
+        var course = await db.Courses.FirstAsync(c => c.Id == id, ct);
+        if (actor.Portal == UserType.InstituteManager && body.TeacherId is not null && body.TeacherId != course.TeacherId)
+        {
+            var linked = await db.InstituteTeachers.AnyAsync(x => x.InstituteId == actor.Owner.Id && x.TeacherId == body.TeacherId, ct);
+            if (!linked) throw new RuleException("forbidden", "That teacher is not in this institute.", 403);
+            course.TeacherId = body.TeacherId.Value;
+        }
+        course.Title = body.Title;
+        course.Description = body.Description;
+        course.LearningDomainId = body.LearningDomainId;
+        course.SectionId = body.SectionId;
+        course.GradeId = body.GradeId;
+        course.SubjectId = body.SubjectId;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(course);
+    }
+
+    static async Task<IResult> Catalog<T>(HttpContext http, IQueryable<T> query, CancellationToken ct) where T : class, INamed
+    {
+        Portal(http);
+        return Results.Ok(await query.OrderBy(x => x.Name).Select(x => new { x.Id, x.Name }).ToListAsync(ct));
     }
 
     static async Task<IResult> CreateChapter(ChapterBody body, HttpContext http, ToviDb db, CancellationToken ct)
