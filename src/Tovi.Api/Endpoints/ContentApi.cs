@@ -8,7 +8,8 @@ namespace Tovi.Api.Endpoints;
 
 public record CourseBody(string Title, string? Description, Guid? TeacherId, Guid? LearningDomainId, Guid? SectionId, Guid? GradeId, Guid? SubjectId);
 public record ChapterBody(Guid CourseId, string Title);
-public record LessonBody(Guid ChapterId, string Title, string? VideoReference);
+public record LessonBody(Guid ChapterId, string Title, string? VideoReference, bool IsFree = false);
+public record LessonUpdateBody(string? Title, string? VideoReference, bool? IsFree);
 public record OrderBody(List<Guid> LessonIds);
 public record SummaryBody(string Title, string Body, Guid? CourseId);
 public record ExamBody(string Title, Guid? CourseId, Guid? ChapterId, Guid? LessonId, int Mark, DateTime EndDate, List<Guid>? GroupIds);
@@ -64,9 +65,10 @@ public static class ContentApi
         group.MapGet("/profile", (HttpContext http) =>
         {
             var user = Http.Me(http, UserType.Teacher).Owner;
-            return Results.Ok(new { user.Id, user.FirstName, user.LastName, user.Phone, user.Address, user.Description, user.TeacherApproved, user.TrialEndsAt });
+            return Results.Ok(new { user.Id, user.FirstName, user.LastName, user.Phone, user.Address, user.Description, user.TeacherApproved, user.TrialEndsAt, user.PhotoFileId, photoUrl = Media.Url(user.PhotoFileId) });
         });
         group.MapPut("/profile", UpdateProfile);
+        group.MapPost("/profile/photo", UploadPhoto);
     }
 
     public static void MapInstitute(RouteGroupBuilder api)
@@ -155,6 +157,7 @@ public static class ContentApi
             await OwnCourse(http, db, id, ct);
             return Results.Ok(await db.Chapters.Where(c => c.CourseId == id).OrderBy(c => c.SortOrder).ToListAsync(ct));
         });
+        group.MapPost("/courses/{id:guid}/cover", UploadCover);
         group.MapPost("/chapters", CreateChapter);
         group.MapGet("/chapters/{id:guid}/lessons", async (Guid id, HttpContext http, ToviDb db, CancellationToken ct) =>
         {
@@ -163,6 +166,7 @@ public static class ContentApi
             return Results.Ok(await db.Lessons.Where(l => l.ChapterId == id).OrderBy(l => l.SortOrder).ToListAsync(ct));
         });
         group.MapPost("/lessons", CreateLesson);
+        group.MapPut("/lessons/{id:guid}", UpdateLesson);
         group.MapPut("/chapters/{id:guid}/lessons/order", Reorder);
         group.MapPost("/courses/{id:guid}/format", FormatCourse);
         group.MapGet("/summaries", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
@@ -369,10 +373,60 @@ public static class ContentApi
         var chapter = await db.Chapters.FirstOrDefaultAsync(c => c.Id == body.ChapterId, ct) ?? throw new RuleException("not_found", "Chapter was not found.", 404);
         await OwnCourse(http, db, chapter.CourseId, ct);
         var order = await db.Lessons.Where(l => l.ChapterId == body.ChapterId).CountAsync(ct);
-        var row = new Lesson { Id = Guid.NewGuid(), ChapterId = body.ChapterId, Title = body.Title, SortOrder = order, VideoReference = body.VideoReference };
+        var row = new Lesson { Id = Guid.NewGuid(), ChapterId = body.ChapterId, Title = body.Title, SortOrder = order, VideoReference = body.VideoReference, IsFree = body.IsFree };
         db.Lessons.Add(row);
         await db.SaveChangesAsync(ct);
         return Results.Ok(row);
+    }
+
+    static async Task<IFormFile> ImageAsync(HttpContext http, string field, CancellationToken ct)
+    {
+        if (!http.Request.HasFormContentType) throw new RuleException("image_required", "Upload the image as a form file.");
+        var form = await http.Request.ReadFormAsync(ct);
+        var file = form.Files[field] ?? form.Files.FirstOrDefault() ?? throw new RuleException("image_required", "Choose an image to upload.");
+        if (!file.ContentType.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) throw new RuleException("file_type", "Upload a PNG, JPEG, or WEBP image.");
+        return file;
+    }
+
+    static async Task<IResult> UploadCover(Guid id, HttpContext http, ToviDb db, IWebHostEnvironment env, IConfiguration config, IClock clock, CancellationToken ct)
+    {
+        Portal(http).Require(PermissionCatalog.Update("courses"));
+        await OwnCourse(http, db, id, ct);
+        var file = await ImageAsync(http, "cover", ct);
+        var stored = await FilesApi.SaveAsync(db, env, config, clock, file, true, ct);
+        var course = await db.Courses.FirstAsync(c => c.Id == id, ct);
+        course.CoverFileId = stored.Id;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { course.Id, course.CoverFileId, coverUrl = Media.Url(course.CoverFileId) });
+    }
+
+    static async Task<IResult> UploadPhoto(HttpContext http, ToviDb db, IWebHostEnvironment env, IConfiguration config, IClock clock, CancellationToken ct)
+    {
+        var actor = Http.Me(http, UserType.Teacher);
+        if (actor.User.Type != UserType.Teacher) throw new RuleException("forbidden", "Only the teacher can change the profile photo.", 403);
+        var file = await ImageAsync(http, "photo", ct);
+        var stored = await FilesApi.SaveAsync(db, env, config, clock, file, true, ct);
+        var user = await db.Users.FirstAsync(u => u.Id == actor.User.Id, ct);
+        user.PhotoFileId = stored.Id;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { user.Id, user.PhotoFileId, photoUrl = Media.Url(user.PhotoFileId) });
+    }
+
+    static async Task<IResult> UpdateLesson(Guid id, LessonUpdateBody body, HttpContext http, ToviDb db, CancellationToken ct)
+    {
+        Portal(http).Require(PermissionCatalog.Update("lessons"));
+        var lesson = await db.Lessons.FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw new RuleException("not_found", "Lesson was not found.", 404);
+        var chapter = await db.Chapters.FirstAsync(c => c.Id == lesson.ChapterId, ct);
+        await OwnCourse(http, db, chapter.CourseId, ct);
+        if (body.Title is not null)
+        {
+            if (string.IsNullOrWhiteSpace(body.Title)) throw new RuleException("title_required", "Write the lesson title.");
+            lesson.Title = body.Title.Trim();
+        }
+        if (body.VideoReference is not null) lesson.VideoReference = string.IsNullOrWhiteSpace(body.VideoReference) ? null : body.VideoReference.Trim();
+        if (body.IsFree is not null) lesson.IsFree = body.IsFree.Value;
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(lesson);
     }
 
     static async Task<IResult> Reorder(Guid id, OrderBody body, HttpContext http, ToviDb db, LearningWork learning, CancellationToken ct)

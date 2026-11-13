@@ -449,3 +449,35 @@ public static class ProgressRules
         new("xp_500", "xp", 500),
     ];
 }
+
+public static class LessonRules
+{
+    /// <summary>The video plays for enrolled students and for everyone when the teacher marked the lesson free.</summary>
+    public static bool CanWatch(bool enrolled, bool isFree) => enrolled || isFree;
+
+    /// <summary>Returns the YouTube video id for watch, share, embed, shorts and live links, or null for anything else.</summary>
+    public static string? YouTubeId(string? reference)
+    {
+        if (string.IsNullOrWhiteSpace(reference)) return null;
+        if (!Uri.TryCreate(reference.Trim(), UriKind.Absolute, out var uri)) return null;
+        var host = uri.Host.ToLowerInvariant();
+        if (host.StartsWith("www.")) host = host[4..];
+        if (host.StartsWith("m.")) host = host[2..];
+        string? id = null;
+        if (host == "youtu.be") id = uri.AbsolutePath.Trim('/').Split('/')[0];
+        else if (host is "youtube.com" or "youtube-nocookie.com" or "music.youtube.com")
+        {
+            var parts = uri.AbsolutePath.Trim('/').Split('/');
+            if (parts.Length >= 2 && parts[0] is "embed" or "shorts" or "live" or "v") id = parts[1];
+            else if (parts.Length >= 1 && parts[0] == "watch")
+            {
+                foreach (var pair in uri.Query.TrimStart('?').Split('&'))
+                {
+                    var kv = pair.Split('=', 2);
+                    if (kv.Length == 2 && kv[0] == "v") id = Uri.UnescapeDataString(kv[1]);
+                }
+            }
+        }
+        return id is not null && id.Length == 11 && id.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_') ? id : null;
+    }
+}
