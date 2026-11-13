@@ -358,7 +358,7 @@ public static class LiveApi
 
     static async Task<string> EgressAsync(IConfiguration config, string room, string method, object body, CancellationToken ct)
     {
-        var host = (config["LiveKit:Host"] ?? "").Replace("wss://", "https://").Replace("ws://", "http://").TrimEnd('/');
+        var host = LiveKitRoom.ApiBase(config["LiveKit:Host"]);
         if (string.IsNullOrWhiteSpace(host)) throw new RuleException("livekit_unconfigured", "LiveKit is not configured on the server.", 503);
         var token = LiveKitTokens.Create(config["LiveKit:ApiKey"] ?? "", config["LiveKit:ApiSecret"] ?? "", "tovi-recorder", room, true, false, DateTime.UtcNow.AddMinutes(5), roomRecord: true);
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };

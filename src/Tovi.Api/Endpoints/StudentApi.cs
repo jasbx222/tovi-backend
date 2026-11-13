@@ -12,6 +12,12 @@ public record AttemptAnswer(Guid QuestionId, string Response);
 public record DeviceBody(string Token, string Platform);
 public record SearchQuery(string? Q);
 
+public static class Media
+{
+    /// <summary>Public files are served without a session, so images load directly in the app.</summary>
+    public static string? Url(Guid? fileId) => fileId is null ? null : $"/api/files/{fileId}";
+}
+
 public static class StudentApi
 {
     public static void Map(RouteGroupBuilder api)
@@ -28,12 +34,11 @@ public static class StudentApi
         student.MapGet("/grades", async (HttpContext http, ToviDb db, CancellationToken ct) => { Http.Me(http, UserType.Student); return Results.Ok(await db.Grades.OrderBy(x => x.Name).ToListAsync(ct)); });
         student.MapGet("/subjects", async (HttpContext http, ToviDb db, CancellationToken ct) => { Http.Me(http, UserType.Student); return Results.Ok(await db.Subjects.OrderBy(x => x.Name).ToListAsync(ct)); });
         student.MapGet("/governorates", async (HttpContext http, ToviDb db, CancellationToken ct) => { Http.Me(http, UserType.Student); return Results.Ok(await db.Governorates.OrderBy(x => x.Name).ToListAsync(ct)); });
-        student.MapGet("/teachers", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
-        {
-            Http.Me(http, UserType.Student);
-            return await Http.Page(db.Users.Where(u => u.Type == UserType.Teacher && u.Status == UserStatus.Active).OrderBy(u => u.FirstName), page, pageSize, u => new { u.Id, u.FirstName, u.LastName }, ct);
-        });
+        student.MapGet("/teachers", Teachers);
+        student.MapGet("/teachers/following", Following);
+        student.MapGet("/teachers/{id:guid}", TeacherProfile);
         student.MapPost("/teachers/{id:guid}/follow", Follow);
+        student.MapDelete("/teachers/{id:guid}/follow", Unfollow);
         student.MapGet("/institutes", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
         {
             Http.Me(http, UserType.Student);
@@ -45,7 +50,11 @@ public static class StudentApi
             var query = db.Courses.AsQueryable();
             if (subjectId is not null) query = query.Where(c => c.SubjectId == subjectId);
             if (gradeId is not null) query = query.Where(c => c.GradeId == gradeId);
-            return await Http.Page(query.OrderByDescending(c => c.CreatedAt), page, pageSize, c => new { c.Id, c.Title, c.TeacherId, c.SubjectId, c.GradeId }, ct);
+            var rule = PageRules.Resolve(page, pageSize, out var p, out var size);
+            RuleException.Require(rule);
+            var total = await query.CountAsync(ct);
+            var rows = await query.OrderByDescending(c => c.CreatedAt).Skip((p - 1) * size).Take(size).ToListAsync(ct);
+            return Results.Ok(new { items = await Catalog.CourseCardsAsync(db, rows, ct), page = p, pageSize = size, total });
         });
         student.MapGet("/courses/{id:guid}", CourseDetail);
         student.MapGet("/summaries", async (HttpContext http, ToviDb db, int? page, int? pageSize, CancellationToken ct) =>
@@ -101,7 +110,7 @@ public static class StudentApi
         var actor = Http.Me(http, UserType.Student);
         var enrolled = await db.Enrollments.Where(e => e.StudentId == actor.User.Id).ToListAsync(ct);
         var courseIds = enrolled.Where(e => e.TargetType == AccessTarget.Course).Select(e => e.TargetId).ToList();
-        var courses = await db.Courses.Where(c => courseIds.Contains(c.Id)).Select(c => new { c.Id, c.Title }).ToListAsync(ct);
+        var courses = await Catalog.CourseCardsAsync(db, await db.Courses.Where(c => courseIds.Contains(c.Id)).ToListAsync(ct), ct);
         var roomIds = enrolled.Where(e => e.TargetType == AccessTarget.VirtualClassroom).Select(e => e.TargetId).ToList();
         var sessions = await (
             from s in db.SessionsSchedule
@@ -111,7 +120,12 @@ public static class StudentApi
             orderby s.StartsAt
             select new { s.Id, s.ClassroomId, s.TeacherId, s.InstituteId, s.StartsAt, s.DurationMinutes, s.Status, s.Title, classroomTitle = c.Title, teacherName = t.FirstName + " " + t.LastName }).ToListAsync(ct);
         var ads = await db.Advertisements.Where(a => a.Active).OrderByDescending(a => a.CreatedAt).Take(5).ToListAsync(ct);
-        return Results.Ok(new { courses, sessions, ads });
+        var followed = await db.Follows.Where(f => f.StudentId == actor.User.Id).Select(f => f.TeacherId).ToListAsync(ct);
+        var popular = await db.Users.Where(u => u.Type == UserType.Teacher && u.Status == UserStatus.Active)
+            .OrderByDescending(u => db.Follows.Count(f => f.TeacherId == u.Id)).ThenBy(u => u.FirstName).Take(12).Select(u => u.Id).ToListAsync(ct);
+        var teacherIds = followed.Concat(popular).Distinct().Take(12).ToList();
+        var teachers = await Catalog.TeacherCardsAsync(db, actor.User.Id, teacherIds, ct);
+        return Results.Ok(new { courses, sessions, ads, teachers });
     }
 
     static async Task<IResult> Search(HttpContext http, ToviDb db, string? q, int? page, int? pageSize, CancellationToken ct)
@@ -127,13 +141,28 @@ public static class StudentApi
         var actor = Http.Me(http, UserType.Student);
         var course = await db.Courses.FirstOrDefaultAsync(c => c.Id == id, ct) ?? throw new RuleException("not_found", "Course was not found.", 404);
         var chapters = await db.Chapters.Where(c => c.CourseId == id).OrderBy(c => c.SortOrder).ToListAsync(ct);
-        var lessons = await db.Lessons.Where(l => chapters.Select(c => c.Id).Contains(l.ChapterId)).OrderBy(l => l.SortOrder).ToListAsync(ct);
+        var chapterIds = chapters.Select(c => c.Id).ToList();
+        var lessons = await db.Lessons.Where(l => chapterIds.Contains(l.ChapterId)).OrderBy(l => l.SortOrder).ToListAsync(ct);
         var enrolled = await db.Enrollments.AnyAsync(e => e.StudentId == actor.User.Id && e.TargetType == AccessTarget.Course && e.TargetId == id, ct);
+        var done = await db.LessonProgress.Where(p => p.StudentId == actor.User.Id).Select(p => p.LessonId).ToListAsync(ct);
+        var card = (await Catalog.CourseCardsAsync(db, [course], ct)).First();
         return Results.Ok(new
         {
             course,
+            card,
             chapters,
-            lessons = lessons.Select(l => new { l.Id, l.ChapterId, l.Title, l.SortOrder, videoReference = enrolled ? l.VideoReference : null }),
+            lessons = lessons.Select(l => new
+            {
+                l.Id,
+                l.ChapterId,
+                l.Title,
+                l.SortOrder,
+                l.IsFree,
+                locked = !LessonRules.CanWatch(enrolled, l.IsFree),
+                completed = done.Contains(l.Id),
+                videoReference = LessonRules.CanWatch(enrolled, l.IsFree) ? l.VideoReference : null,
+                youtubeId = LessonRules.CanWatch(enrolled, l.IsFree) ? LessonRules.YouTubeId(l.VideoReference) : null,
+            }),
             enrolled
         });
     }
@@ -146,13 +175,78 @@ public static class StudentApi
         return Results.Ok(new { summary.Id, summary.Title, summary.TeacherId, body = enrolled ? summary.Body : null, enrolled });
     }
 
+    static async Task<IResult> Teachers(HttpContext http, ToviDb db, string? q, int? page, int? pageSize, CancellationToken ct)
+    {
+        var actor = Http.Me(http, UserType.Student);
+        var rule = PageRules.Resolve(page, pageSize, out var p, out var size);
+        RuleException.Require(rule);
+        var query = db.Users.Where(u => u.Type == UserType.Teacher && u.Status == UserStatus.Active);
+        if (!string.IsNullOrWhiteSpace(q)) query = query.Where(u => (u.FirstName + " " + u.LastName).Contains(q));
+        var total = await query.CountAsync(ct);
+        var ids = await query.OrderByDescending(u => db.Follows.Count(f => f.TeacherId == u.Id)).ThenBy(u => u.FirstName).Skip((p - 1) * size).Take(size).Select(u => u.Id).ToListAsync(ct);
+        return Results.Ok(new { items = await Catalog.TeacherCardsAsync(db, actor.User.Id, ids, ct), page = p, pageSize = size, total });
+    }
+
+    static async Task<IResult> Following(HttpContext http, ToviDb db, CancellationToken ct)
+    {
+        var actor = Http.Me(http, UserType.Student);
+        var ids = await db.Follows.Where(f => f.StudentId == actor.User.Id).Select(f => f.TeacherId).ToListAsync(ct);
+        return Results.Ok(new { items = await Catalog.TeacherCardsAsync(db, actor.User.Id, ids, ct), total = ids.Count });
+    }
+
+    static async Task<IResult> TeacherProfile(Guid id, HttpContext http, ToviDb db, IClock clock, CancellationToken ct)
+    {
+        var actor = Http.Me(http, UserType.Student);
+        var teacher = await db.Users.FirstOrDefaultAsync(u => u.Id == id && u.Type == UserType.Teacher && u.Status == UserStatus.Active, ct)
+            ?? throw new RuleException("not_found", "Teacher was not found.", 404);
+        var card = (await Catalog.TeacherCardsAsync(db, actor.User.Id, [id], ct)).First();
+        var courses = await Catalog.CourseCardsAsync(db, await db.Courses.Where(c => c.TeacherId == id).OrderByDescending(c => c.CreatedAt).ToListAsync(ct), ct);
+        var courseIds = courses.Select(c => c.Id).ToList();
+        var free = await (
+            from l in db.Lessons
+            join ch in db.Chapters on l.ChapterId equals ch.Id
+            join c in db.Courses on ch.CourseId equals c.Id
+            where c.TeacherId == id && l.IsFree
+            orderby c.Title, ch.SortOrder, l.SortOrder
+            select new { l.Id, l.Title, l.VideoReference, courseId = c.Id, courseTitle = c.Title, chapterTitle = ch.Title }).Take(30).ToListAsync(ct);
+        var now = clock.UtcNow;
+        var sessions = await (
+            from s in db.SessionsSchedule
+            join r in db.Classrooms on s.ClassroomId equals r.Id
+            where s.TeacherId == id && s.Status == SessionStatus.Scheduled
+            orderby s.StartsAt
+            select new { s.Id, s.Title, s.StartsAt, s.DurationMinutes, s.ClassroomId, classroomTitle = r.Title }).ToListAsync(ct);
+        var rooms = await db.Enrollments.Where(e => e.StudentId == actor.User.Id && e.TargetType == AccessTarget.VirtualClassroom).Select(e => e.TargetId).ToListAsync(ct);
+        var upcoming = sessions.Where(s => s.StartsAt.AddMinutes(s.DurationMinutes) > now).Take(10)
+            .Select(s => new { s.Id, s.Title, s.StartsAt, s.DurationMinutes, s.classroomTitle, phase = MeetingRules.Phase(s.StartsAt, s.DurationMinutes, now), enrolled = rooms.Contains(s.ClassroomId) });
+        return Results.Ok(new
+        {
+            teacher = card,
+            bio = teacher.Description,
+            courses,
+            freeLessons = free.Select(l => new { l.Id, l.Title, l.courseId, l.courseTitle, l.chapterTitle, videoReference = l.VideoReference, youtubeId = LessonRules.YouTubeId(l.VideoReference) }),
+            upcoming
+        });
+    }
+
+    static async Task<IResult> Unfollow(Guid id, HttpContext http, ToviDb db, CancellationToken ct)
+    {
+        var actor = Http.Me(http, UserType.Student);
+        var rows = await db.Follows.Where(f => f.StudentId == actor.User.Id && f.TeacherId == id).ToListAsync(ct);
+        db.Follows.RemoveRange(rows);
+        await db.SaveChangesAsync(ct);
+        return Results.Ok(new { following = false, followers = await db.Follows.CountAsync(f => f.TeacherId == id, ct) });
+    }
+
     static async Task<IResult> Follow(Guid id, HttpContext http, ToviDb db, CancellationToken ct)
     {
         var actor = Http.Me(http, UserType.Student);
+        if (!await db.Users.AnyAsync(u => u.Id == id && u.Type == UserType.Teacher && u.Status == UserStatus.Active, ct))
+            throw new RuleException("not_found", "Teacher was not found.", 404);
         var exists = await db.Follows.AnyAsync(f => f.StudentId == actor.User.Id && f.TeacherId == id, ct);
         if (!exists) db.Follows.Add(new TeacherFollow { Id = Guid.NewGuid(), StudentId = actor.User.Id, TeacherId = id });
         await db.SaveChangesAsync(ct);
-        return Results.Ok(new { following = true });
+        return Results.Ok(new { following = true, followers = await db.Follows.CountAsync(f => f.TeacherId == id, ct) });
     }
 
     static async Task<IResult> Toggle(HttpContext http, ToviDb db, Guid courseId, bool like, CancellationToken ct)
@@ -222,7 +316,7 @@ public static class StudentApi
         var lesson = await db.Lessons.FirstOrDefaultAsync(l => l.Id == id, ct) ?? throw new RuleException("not_found", "Lesson was not found.", 404);
         var chapter = await db.Chapters.FirstAsync(c => c.Id == lesson.ChapterId, ct);
         var enrolled = await db.Enrollments.AnyAsync(e => e.StudentId == actor.User.Id && e.TargetType == AccessTarget.Course && e.TargetId == chapter.CourseId, ct);
-        if (!enrolled) throw new RuleException("not_enrolled", "Redeem a course code before opening lessons.", 403);
+        if (!LessonRules.CanWatch(enrolled, lesson.IsFree)) throw new RuleException("not_enrolled", "Redeem a course code before opening lessons.", 403);
         if (!await db.LessonProgress.AnyAsync(p => p.StudentId == actor.User.Id && p.LessonId == id, ct))
             db.LessonProgress.Add(new LessonProgress { Id = Guid.NewGuid(), StudentId = actor.User.Id, LessonId = id, CompletedAt = clock.UtcNow });
         var xp = await progress.AwardAsync(actor.User.Id, ProgressRules.Lesson, id, ct);
@@ -325,7 +419,7 @@ public static class MeetingApi
         }
         else if (!string.IsNullOrWhiteSpace(body.Identity))
         {
-            await LiveKitRoom.SendAsync(configuration, room, "MutePublishedTrack", new { room, identity = body.Identity, muted = true }, ct);
+            await LiveKitRoom.MuteParticipantAsync(configuration, room, body.Identity, ct);
         }
         else throw new RuleException("identity_required", "Choose a participant or mute all students.");
         return Results.Ok(new { requested = true, session = session.Id });
@@ -485,11 +579,20 @@ public static class FilesApi
     sealed record WebhookBody(Guid PaymentId, string Status);
 }
 
-static class LiveKitRoom
+public static class LiveKitRoom
 {
+    /// <summary>The room service is plain HTTP(S); clients connect with ws(s), so the scheme is swapped.</summary>
+    public static string ApiBase(string? host)
+    {
+        var value = (host ?? "").Trim().TrimEnd('/');
+        if (value.StartsWith("wss://", StringComparison.OrdinalIgnoreCase)) return "https://" + value[6..];
+        if (value.StartsWith("ws://", StringComparison.OrdinalIgnoreCase)) return "http://" + value[5..];
+        return value;
+    }
+
     public static async Task<string> SendAsync(IConfiguration config, string room, string method, object body, CancellationToken ct)
     {
-        var host = config["LiveKit:Host"]!.TrimEnd('/');
+        var host = ApiBase(config["LiveKit:Host"]);
         var token = LiveKitTokens.Create(config["LiveKit:ApiKey"] ?? "", config["LiveKit:ApiSecret"] ?? "", "tovi-server", room, true, false, DateTime.UtcNow.AddMinutes(5));
         using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         var request = new HttpRequestMessage(HttpMethod.Post, $"{host}/twirp/livekit.RoomService/{method}")
@@ -504,7 +607,14 @@ static class LiveKitRoom
         return text;
     }
 
-    public static async Task MuteStudentsAsync(IConfiguration config, string room, CancellationToken ct)
+    public static Task MuteStudentsAsync(IConfiguration config, string room, CancellationToken ct) =>
+        MuteWhereAsync(config, room, identity => identity.StartsWith("student:", StringComparison.Ordinal), ct);
+
+    /// <summary>MutePublishedTrack needs a track sid, so the participant's tracks are listed first.</summary>
+    public static Task MuteParticipantAsync(IConfiguration config, string room, string target, CancellationToken ct) =>
+        MuteWhereAsync(config, room, identity => identity == target, ct);
+
+    static async Task MuteWhereAsync(IConfiguration config, string room, Func<string, bool> match, CancellationToken ct)
     {
         var json = await SendAsync(config, room, "ListParticipants", new { room }, ct);
         using var doc = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
@@ -512,7 +622,7 @@ static class LiveKitRoom
         foreach (var person in people.EnumerateArray())
         {
             var identity = person.TryGetProperty("identity", out var id) ? id.GetString() : null;
-            if (identity is null || !identity.StartsWith("student:", StringComparison.Ordinal)) continue;
+            if (identity is null || !match(identity)) continue;
             if (!person.TryGetProperty("tracks", out var tracks)) continue;
             foreach (var track in tracks.EnumerateArray())
             {
