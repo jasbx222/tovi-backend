@@ -139,7 +139,11 @@ public sealed partial class BehaviorTests
             Assert.Equal(1, progress.GetProperty("streak").GetProperty("current").GetInt32());
             Assert.Contains(progress.GetProperty("achievements").EnumerateArray(), a => a.GetProperty("key").GetString() == "first_live" && a.GetProperty("unlocked").GetBoolean());
 
-            Assert.Equal(HttpStatusCode.Forbidden, (await me.GetAsync($"{path}/summary")).StatusCode);
+            var recap = await Json(await me.GetAsync($"{path}/summary"));
+            Assert.True(recap.GetProperty("student").GetBoolean());
+            Assert.True(recap.GetProperty("me").GetProperty("attended").GetBoolean());
+            Assert.Equal(1, recap.GetProperty("me").GetProperty("asked").GetInt32());
+            Assert.False(recap.TryGetProperty("attendance", out _));
             var summary = await Json(await host.GetAsync($"{hostPath}/summary"));
             Assert.Equal(2, summary.GetProperty("enrolled").GetInt32());
             Assert.Equal(1, summary.GetProperty("joined").GetInt32());

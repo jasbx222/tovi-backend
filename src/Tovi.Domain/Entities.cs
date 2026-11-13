@@ -445,6 +445,10 @@ public class UserNotification
     public NotificationType Type { get; set; }
     public DateTime CreatedAt { get; set; }
     public bool Read { get; set; }
+    /// <summary>What the notification opens in the app: session, course, exam, summary, or empty.</summary>
+    public string? TargetType { get; set; }
+    public Guid? TargetId { get; set; }
+    public DateTime? ReadAt { get; set; }
 }
 
 public class DeviceToken

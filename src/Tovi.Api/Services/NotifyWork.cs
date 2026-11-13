@@ -105,7 +105,9 @@ public sealed class NotifyWork(ToviDb db, IClock clock, IPushSender push, ILogge
                     Title = "بدأت الجلسة",
                     Body = "يمكنك الدخول إلى الصف خلال نافذة الوقت المحددة.",
                     Type = NotificationType.Info,
-                    CreatedAt = now
+                    CreatedAt = now,
+                    TargetType = "session",
+                    TargetId = session.Id
                 });
             }
 
