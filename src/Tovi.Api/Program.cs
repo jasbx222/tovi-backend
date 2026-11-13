@@ -69,7 +69,7 @@ builder.Services.AddRateLimiter(options =>
         var key = http.User.FindFirst("sub")?.Value ?? http.Connection.RemoteIpAddress?.ToString() ?? "anon";
         return RateLimitPartition.GetFixedWindowLimiter(key, _ => new FixedWindowRateLimiterOptions
         {
-            PermitLimit = 120,
+            PermitLimit = testHost ? 100_000 : 120,
             Window = TimeSpan.FromMinutes(1),
             QueueLimit = 0
         });

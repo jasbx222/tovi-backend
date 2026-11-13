@@ -88,7 +88,7 @@ public sealed class ToviFactory : WebApplicationFactory<Program>
     }
 }
 
-public sealed class BehaviorTests : IClassFixture<ToviFactory>
+public sealed partial class BehaviorTests : IClassFixture<ToviFactory>
 {
     readonly ToviFactory factory;
     public BehaviorTests(ToviFactory factory) => this.factory = factory;
