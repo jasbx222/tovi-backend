@@ -31,6 +31,8 @@ public class User
     public Guid? EmployerUserId { get; set; }
     public EmployeeStyle? EmployeeStyle { get; set; }
     public Guid? LogoFileId { get; set; }
+    /// <summary>Public profile photo shown to students on teacher cards and the teacher profile.</summary>
+    public Guid? PhotoFileId { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -132,6 +134,8 @@ public class Course
     public Guid? SectionId { get; set; }
     public Guid? GradeId { get; set; }
     public Guid? SubjectId { get; set; }
+    /// <summary>Public cover image shown on course cards and the course page.</summary>
+    public Guid? CoverFileId { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -150,6 +154,8 @@ public class Lesson
     public string Title { get; set; } = "";
     public int SortOrder { get; set; }
     public string? VideoReference { get; set; }
+    /// <summary>A free lesson plays for any signed-in student, without a course code.</summary>
+    public bool IsFree { get; set; }
 }
 
 public class Summary
